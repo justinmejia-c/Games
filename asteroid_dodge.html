@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Asteroid Dodge 🚀</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a1a; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: system-ui, sans-serif; color: #fff; }
+  #hud { display: flex; gap: 10px; margin-bottom: 12px; }
+  .hc { background: #ffffff12; border: 0.5px solid #ffffff22; border-radius: 8px; padding: 8px 18px; text-align: center; min-width: 80px; }
+  .hl { font-size: 10px; color: #8888aa; text-transform: uppercase; letter-spacing: .08em; }
+  .hv { font-size: 20px; font-weight: 500; color: #fff; }
+  #gc { border: 1px solid #ffffff22; border-radius: 12px; background: #0a0a1a; display: block; cursor: none; touch-action: none; }
+  #msg { margin-top: 10px; font-size: 13px; color: #8888aa; text-align: center; }
+  #shoot-btn { margin-top: 10px; padding: 8px 28px; font-size: 14px; border-radius: 8px; border: 1px solid #ffffff33; background: #ffffff11; color: #fff; cursor: pointer; display: none; }
+  #shoot-btn:active { background: #ffffff22; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="hc"><div class="hl">Score</div><div class="hv" id="score">0</div></div>
+  <div class="hc"><div class="hl">Best</div><div class="hv" id="best">0</div></div>
+  <div class="hc"><div class="hl">Level</div><div class="hv" id="level">1</div></div>
+  <div class="hc"><div class="hl">Lives</div><div class="hv" id="lives">❤️❤️❤️</div></div>
+  <div class="hc"><div class="hl">Power</div><div class="hv" id="power">—</div></div>
+</div>
+<canvas id="gc" width="560" height="460"></canvas>
+<div id="msg">Click or tap to start</div>
+<button id="shoot-btn" onclick="fireBullet()">🔫 Fire (tap)</button>
+
+<script>
+const canvas=document.getElementById('gc'),ctx=canvas.getContext('2d');
+const W=canvas.width,H=canvas.height;
+let state='idle',ship,asteroids,bullets,particles,powerups,score,lives,level,frame,lastSpawn,lastEnemy,highScore,powerupTimer,powerupType,isMobile;
+
+const AC=new (window.AudioContext||window.webkitAudioContext)();
+function beep(freq,dur,type='sine',vol=0.18){
+  try{
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.connect(g);g.connect(AC.destination);
+    o.frequency.value=freq;o.type=type;
+    g.gain.setValueAtTime(vol,AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+dur);
+    o.start();o.stop(AC.currentTime+dur);
+  }catch(e){}
+}
+function sndShoot(){beep(880,0.08,'square',0.12)}
+function sndExplode(){beep(120,0.25,'sawtooth',0.22);setTimeout(()=>beep(60,0.3,'sawtooth',0.15),50)}
+function sndHit(){beep(200,0.18,'sawtooth',0.25)}
+function sndPowerup(){beep(523,0.1);setTimeout(()=>beep(659,0.1),100);setTimeout(()=>beep(784,0.15),200)}
+function sndShield(){beep(300,0.15,'triangle',0.2)}
+
+function loadBest(){try{return parseInt(localStorage.getItem('astro_best')||'0')}catch{return 0}}
+function saveBest(s){try{localStorage.setItem('astro_best',s)}catch{}}
+
+function reset(){
+  ship={x:W/2,y:H-60,r:14,inv:0,shield:false};
+  asteroids=[];bullets=[];particles=[];powerups=[];
+  score=0;lives=3;level=1;frame=0;lastSpawn=0;lastEnemy=0;
+  powerupTimer=0;powerupType=null;
+  highScore=loadBest();
+  isMobile=/Mobi|Android/i.test(navigator.userAgent)||window.innerWidth<600;
+  document.getElementById('shoot-btn').style.display=isMobile?'block':'none';
+  updateHUD();
+}
+
+function updateHUD(){
+  document.getElementById('score').textContent=score;
+  document.getElementById('best').textContent=highScore;
+  document.getElementById('level').textContent=level;
+  document.getElementById('lives').textContent=lives>0?'❤️'.repeat(lives):'💀';
+  const pt=powerupType;
+  document.getElementById('power').textContent=pt==='shield'?'🛡️ '+Math.ceil(powerupTimer/60)+'s':pt==='slow'?'🐢 '+Math.ceil(powerupTimer/60)+'s':pt==='life'?'✨':'—';
+}
+
+const ACOLS=['#ff6b6b','#ffd93d','#6bcb77','#4d96ff','#ff922b','#cc5de8'];
+function spawnAsteroid(){
+  const r=13+Math.random()*18,x=r+Math.random()*(W-2*r);
+  const spd=(1.4+level*0.35)*(0.8+Math.random()*0.5);
+  const col=ACOLS[Math.floor(Math.random()*ACOLS.length)];
+  const sides=5+Math.floor(Math.random()*5);
+  const jagged=Array.from({length:sides},()=>0.65+Math.random()*0.5);
+  asteroids.push({x,y:-r,r,vx:(Math.random()-.5)*spd*.4,vy:spd,col,rot:0,rotV:(Math.random()-.5)*.07,jagged,sides,homing:false});
+}
+function spawnHoming(){
+  const r=16,side=Math.random()<.5?0:1;
+  const x=side===0?-r:W+r,y=40+Math.random()*(H-100);
+  asteroids.push({x,y,r,vx:0,vy:0,col:'#ff4466',rot:0,rotV:.05,jagged:[1,0.7,1,0.7,1,0.7],sides:6,homing:true});
+}
+function spawnPowerup(x,y){
+  if(Math.random()>0.28)return;
+  const types=['shield','slow','life'];
+  const t=types[Math.floor(Math.random()*types.length)];
+  powerups.push({x,y,t,r:12,pulse:0});
+}
+
+function fireBullet(){
+  if(state!=='playing')return;
+  bullets.push({x:ship.x,y:ship.y-ship.r,vx:0,vy:-11,r:4});
+  sndShoot();
+}
+
+function drawAsteroid(a){
+  ctx.save();ctx.translate(a.x,a.y);ctx.rotate(a.rot);
+  ctx.beginPath();
+  for(let i=0;i<a.sides;i++){
+    const ang=(i/a.sides)*Math.PI*2;
+    const d=a.r*a.jagged[i%a.jagged.length];
+    i===0?ctx.moveTo(Math.cos(ang)*d,Math.sin(ang)*d):ctx.lineTo(Math.cos(ang)*d,Math.sin(ang)*d);
+  }
+  ctx.closePath();
+  if(a.homing){ctx.fillStyle='#ff446633';ctx.strokeStyle='#ff4466';}
+  else{ctx.fillStyle=a.col+'33';ctx.strokeStyle=a.col;}
+  ctx.lineWidth=2;ctx.fill();ctx.stroke();
+  if(a.homing){
+    ctx.fillStyle='#ff4466';ctx.font='12px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('👁',0,1);
+  }
+  ctx.restore();
+}
+
+function drawShip(s){
+  if(s.inv>0&&Math.floor(s.inv/5)%2===0)return;
+  ctx.save();ctx.translate(s.x,s.y);
+  if(s.shield){
+    ctx.beginPath();ctx.arc(0,0,s.r+8,0,Math.PI*2);
+    ctx.strokeStyle='#4d96ff88';ctx.lineWidth=3;ctx.stroke();
+    ctx.fillStyle='#4d96ff22';ctx.fill();
+  }
+  ctx.beginPath();ctx.moveTo(0,-14);ctx.lineTo(-10,11);ctx.lineTo(0,6);ctx.lineTo(10,11);ctx.closePath();
+  ctx.fillStyle='#a8d8ff';ctx.strokeStyle='#4d96ff';ctx.lineWidth=2;ctx.fill();ctx.stroke();
+  ctx.beginPath();ctx.arc(0,7,4,0,Math.PI*2);ctx.fillStyle='#ffd93d';ctx.fill();
+  ctx.restore();
+}
+
+function drawBullet(b){
+  ctx.save();
+  ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
+  ctx.fillStyle='#ffffff';ctx.shadowColor='#4d96ff';ctx.shadowBlur=10;ctx.fill();
+  ctx.restore();
+}
+
+function drawPowerup(p){
+  p.pulse=(p.pulse||0)+0.07;
+  const sc=1+Math.sin(p.pulse)*0.12;
+  ctx.save();ctx.translate(p.x,p.y);ctx.scale(sc,sc);
+  ctx.beginPath();ctx.arc(0,0,p.r,0,Math.PI*2);
+  const cols={shield:'#4d96ff',slow:'#6bcb77',life:'#ff6b6b'};
+  ctx.fillStyle=cols[p.t]+'44';ctx.strokeStyle=cols[p.t];ctx.lineWidth=2;ctx.fill();ctx.stroke();
+  ctx.font='13px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(p.t==='shield'?'🛡️':p.t==='slow'?'🐢':'❤️',0,1);
+  ctx.restore();
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha=p.life/p.maxLife;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size||2.5,0,Math.PI*2);
+    ctx.fillStyle=p.col;ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+
+function spawnParticles(x,y,col,n=12){
+  for(let i=0;i<n;i++){
+    const ang=Math.random()*Math.PI*2,spd=1.5+Math.random()*3.5;
+    particles.push({x,y,vx:Math.cos(ang)*spd,vy:Math.sin(ang)*spd,life:40,maxLife:40,col,size:1.5+Math.random()*3});
+  }
+}
+
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+
+function drawOverlay(title,sub){
+  ctx.fillStyle='rgba(10,10,26,0.82)';ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.fillStyle='#ffffff';ctx.font='500 28px system-ui,sans-serif';ctx.fillText(title,W/2,H/2-20);
+  ctx.fillStyle='#8888aa';ctx.font='400 15px system-ui,sans-serif';ctx.fillText(sub,W/2,H/2+14);
+}
+
+function drawStars(){
+  if(!drawStars.s){drawStars.s=Array.from({length:70},()=>({x:Math.random()*W,y:Math.random()*H,r:Math.random()*1.5,b:Math.random()}));}
+  for(const s of drawStars.s){
+    ctx.globalAlpha=0.25+s.b*0.55;
+    ctx.beginPath();ctx.arc(s.x,s.y,s.r,0,Math.PI*2);ctx.fillStyle='#ffffff';ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+
+function loop(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#0a0a1a';ctx.fillRect(0,0,W,H);
+  drawStars();
+
+  if(state==='idle'){drawOverlay('Asteroid Dodge 🚀','Mouse to move  •  Space to shoot');requestAnimationFrame(loop);return;}
+  if(state==='dead'){drawOverlay('Game Over','Score: '+score+'  •  Click to play again');requestAnimationFrame(loop);return;}
+
+  frame++;
+  level=1+Math.floor(score/300);
+  const slowMod=powerupType==='slow'?0.4:1;
+
+  const spawnRate=Math.max(16,55-level*3);
+  if(frame-lastSpawn>spawnRate){spawnAsteroid();lastSpawn=frame;}
+  const enemyRate=Math.max(180,400-level*20);
+  if(frame-lastEnemy>enemyRate){spawnHoming();lastEnemy=frame;}
+
+  if(powerupTimer>0){powerupTimer--;if(powerupTimer<=0){powerupType=null;ship.shield=false;}}
+
+  for(const a of asteroids){
+    if(a.homing){
+      const dx=ship.x-a.x,dy=ship.y-a.y,len=Math.hypot(dx,dy)||1;
+      const spd=(1.8+level*0.3)*slowMod;
+      a.vx=dx/len*spd;a.vy=dy/len*spd;
+    } else {
+      a.vy=((1.4+level*0.35)*0.88)*slowMod;
+    }
+    a.x+=a.vx;a.y+=a.vy;a.rot+=a.rotV;
+    drawAsteroid(a);
+
+    if(ship.inv===0&&dist(ship,a)<ship.r+a.r-5){
+      if(ship.shield){
+        spawnParticles(a.x,a.y,'#4d96ff',8);sndShield();
+        a.y=H+100;
+      } else {
+        spawnParticles(a.x,a.y,a.col);sndHit();
+        a.y=H+100;lives--;ship.inv=90;
+        updateHUD();
+        if(lives<=0){state='dead';if(score>highScore){highScore=score;saveBest(score);}updateHUD();}
+      }
+    }
+  }
+
+  for(const b of bullets){
+    b.x+=b.vx;b.y+=b.vy;
+    drawBullet(b);
+    for(const a of asteroids){
+      if(!a._dead&&dist(b,a)<b.r+a.r-3){
+        spawnParticles(a.x,a.y,a.col,14);sndExplode();
+        spawnPowerup(a.x,a.y);
+        score+=a.homing?50:20;
+        a._dead=true;b._dead=true;
+        updateHUD();
+      }
+    }
+  }
+
+  for(const p of powerups){
+    drawPowerup(p);
+    if(dist(ship,p)<ship.r+p.r){
+      sndPowerup();
+      if(p.t==='shield'){powerupType='shield';powerupTimer=300;ship.shield=true;}
+      else if(p.t==='slow'){powerupType='slow';powerupTimer=240;}
+      else if(p.t==='life'){lives=Math.min(5,lives+1);}
+      p._dead=true;updateHUD();
+    }
+  }
+
+  for(const p of particles){p.x+=p.vx;p.y+=p.vy;p.life--;}
+  particles=particles.filter(p=>p.life>0);
+  asteroids=asteroids.filter(a=>!a._dead&&a.y<H+60&&a.x>-60&&a.x<W+60);
+  bullets=bullets.filter(b=>!b._dead&&b.y>-10);
+  powerups=powerups.filter(p=>!p._dead&&p.y<H+40);
+
+  if(ship.inv>0)ship.inv--;
+  drawParticles();
+  drawShip(ship);
+
+  score++;
+  if(frame%10===0)updateHUD();
+
+  requestAnimationFrame(loop);
+}
+
+function setShipPos(cx,cy){
+  const rect=canvas.getBoundingClientRect();
+  const sx=W/rect.width,sy=H/rect.height;
+  ship.x=Math.max(14,Math.min(W-14,(cx-rect.left)*sx));
+  ship.y=Math.max(14,Math.min(H-14,(cy-rect.top)*sy));
+}
+
+canvas.addEventListener('mousemove',e=>{if(state==='playing')setShipPos(e.clientX,e.clientY);});
+canvas.addEventListener('touchmove',e=>{e.preventDefault();if(state==='playing')setShipPos(e.touches[0].clientX,e.touches[0].clientY);},{passive:false});
+canvas.addEventListener('click',()=>{
+  if(state==='idle'||state==='dead'){reset();state='playing';document.getElementById('msg').textContent='Space to shoot  •  dodge the 👁 enemies!';}
+});
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  if(state==='idle'||state==='dead'){reset();state='playing';document.getElementById('msg').textContent='Tap 🔫 to shoot  •  dodge the 👁 enemies!';}
+},{passive:false});
+document.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();fireBullet();}});
+
+reset();
+loop();
+</script>
+</body>
+</html>
