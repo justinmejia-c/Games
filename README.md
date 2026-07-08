@@ -6,7 +6,7 @@ This repo is a collection of my game projects, prototypes, and playable builds. 
 
 ## Featured Games (So far)
 
-### 1. Game Title
+###  Games
 Rage Baitas/Betas
 - Fun and rage enducing game that is difficult to beat but not impossible.
 
