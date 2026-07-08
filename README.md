@@ -8,7 +8,7 @@ This repo is a collection of my game projects, prototypes, and playable builds. 
 
 ### 1. Game Title
 Rage Baitas/Betas
-Fun and rage enducing game that is difficult to beat but not impossible.
+- Fun and rage enducing game that is difficult to beat but not impossible.
 
 Astroid Dodge
-An arcade style game where the player must get the highest score possible. 
+- An arcade style game where the player must get the highest score possible. 
